@@ -155,6 +155,19 @@ synthetic, while their SOP previews read the real public documentation on reques
 
 ## Browser preferences and presentation
 
+The workspace uses the full desktop width, with view tabs across the top.
+Select a row to open its detail panel, and use **Close details** to return to the
+full list. **Ask Chai** stays fixed in the bottom-right corner while scrolling,
+with its existing conversation controls.
+Checkboxes select open alerts in the current view and filters; **Select all matching**
+includes the entire filtered list. **Close selected**, **Snooze selected**, and
+**WIP selected** preview the exact targets before using a resumable action plan.
+All workflow actions preserve the current view, search, category and priority
+filters. After a confirmed action, an open inspector advances to the next
+unaffected alert in the list, or the previous alert at the end. It closes when
+no other alert remains. Failed or unconfirmed actions keep the current alert;
+explicit navigation while a request is running takes precedence.
+
 Times use the browser's local timezone, including daylight saving. Readable Slack
 and Chai report prose also converts explicit UTC ISO timestamps (`Z`, `+00:00`
 or `+0000`) and `YYYY-MM-DD HH:mm[:ss] UTC` values, showing the local UTC offset.
@@ -264,6 +277,17 @@ Go regexp engine, show up to 200 current matching occurrences, and restrict scop
 to the selected channel and producer. Patterns match parsed source identifiers,
 not arbitrary message text. Regex requires a parsed identifier; individual actions
 do not. A stale revision is rejected before saving.
+
+The checkbox toolbar offers **Close selected**, **Snooze selected**, and
+**WIP selected**. Their dialogs default to exactly the checked occurrences. Switch
+to **Matching identifier regex** to edit a pattern for each selected source and
+channel. Each server preview includes other current matches in that source and
+channel, even outside the selection or current view. WIP and Snooze save one rule
+per source/channel and also cover future matches until the next **06:00 UTC**;
+Close freezes only the listed current matches. Regex is unavailable when a selected
+source/channel has no parsed identifier to anchor its pattern; exact selection
+still works. All selected actions retain their requests and progress for explicit
+recovery and preserve the current view and filters.
 
 Individual WIP stays assigned until released or closed. Regex WIP covers current
 and future matches until the next **06:00 UTC**; unfinished rule-owned occurrences
