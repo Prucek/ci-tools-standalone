@@ -159,6 +159,26 @@ The workspace uses the full desktop width, with view tabs across the top.
 Select a row to open its detail panel, and use **Close details** to return to the
 full list. **Ask Chai** stays fixed in the bottom-right corner while scrolling,
 with its existing conversation controls.
+
+Alert views also offer an optional **Group by name** checkbox. It collapses
+occurrences that share one alert name, the first parsed identifier, or the
+readable title when no identifier was parsed, behind expandable groups that
+start closed, including single occurrences. Groups with personally unread
+members are listed first, newest-first among themselves, followed by fully
+read groups, also newest-first. Members keep the list's newest-first order
+inside their group. Group counts follow the current view, search,
+category and priority filters, and a group with personally unread members also
+shows their count next to the total, for example `2 new`, using the same
+personal unread state as the row markers. Grouping is display-only: expanding
+a group never marks an alert read or opens the inspector, and every row keeps
+its own checkbox, links and actions. The flat list remains the default, and
+toggling back preserves the current selection and filters. The choice is saved
+per browser in a cookie (about one year, `Path=/`, `SameSite=Lax`, `Secure` on
+HTTPS) that holds no user or alert data, separately from the per-user local
+preferences; unknown, malformed or blocked cookie values fall back to the flat
+list. Which groups are open is kept only for the current visit, including
+across automatic refreshes, and is never persisted.
+
 Checkboxes select open alerts in the current view and filters; **Select all matching**
 includes the entire filtered list. **Close selected**, **Snooze selected**, and
 **WIP selected** preview the exact targets before using a resumable action plan.
@@ -457,9 +477,10 @@ The focused table-driven tests cover producer/classification trust, occurrence
 identity, scoped daily-reset WIP/Snooze and replay, stale/idempotent/uncertain
 writes, Chai thread binding, HTTP authorization/CSRF, Slack pagination, and complete
 GitHub search caching. Browser logic unit cases run with Node when available and
-cover personal unread state, notification deduplication, safe formatting, and
-explicit recovery of partial close batches. Tests use fixed clocks and in-memory
-transports. There is no integration or browser test framework.
+cover personal unread state, notification deduplication, safe formatting, alert
+name grouping, and explicit recovery of partial close batches. Tests use fixed
+clocks and in-memory transports. There is no integration or browser test
+framework.
 
 Scoped workflow fields extend durable v1 records. New versions still read old
 records, but older binaries reject scoped fields during strict replay. Keep a
