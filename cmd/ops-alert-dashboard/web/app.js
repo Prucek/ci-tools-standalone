@@ -3,7 +3,7 @@
   const views = {feed: ['▤', 'Feed', 'Occurrences needing triage'], acknowledged: ['✓', 'WIP', 'Occurrences an operator is investigating'], snoozed: ['◷', 'Snoozed', 'Snoozed occurrences and matching rules with a fixed daily return'], closed: ['☑', 'Closed investigations', 'Completed investigations; source health is unchanged'], unmerged_prs: ['⑂', 'Unmerged PRs', 'Open pull requests from configured public repository bots'], chai_reports: ['✧', 'Chai reports', 'Scheduled findings, grouped by task with latest and history']};
   const categories = {cluster_fleet: 'Cluster fleet', cloud_cleanup: 'Cloud cleanup', ci_platform: 'CI platform', repo_automation: 'Repo automation', other: 'Other'};
   const el = id => document.getElementById(id);
-  const state = {snapshot: null, view: 'feed', category: '', selected: '', selectionVersion: 0, pendingSelection: null, pendingTargets: [], batchTargets: new Map(), checked: new Set(), selectedReport: '', reportDisclosures: new Set(), query: '', color: '', fetching: false, sending: false, pending: null, pendingUnconfirmed: false, pendingUser: '', storageUser: null, storageError: '', dialogOccurrence: null, dialogTargets: [], dialogGroups: [], previewGroups: [], dialogKind: '', lastFocus: null, fetchError: '', authPaused: false, personal: null, personalUser: '', personalError: '', wasReady: false, previewVersion: 0, previewTargets: [], previewValid: false, dialogScope: 'occurrence', batch: null, prs: null, prsLoading: false, generation: 0};
+  const state = {snapshot: null, view: 'feed', category: '', selected: '', selectionVersion: 0, pendingSelection: null, pendingTargets: [], batchTargets: new Map(), checked: new Set(), selectedReport: '', reportDisclosures: new Set(), grouped: false, groupDisclosures: new Set(), query: '', color: '', fetching: false, sending: false, pending: null, pendingUnconfirmed: false, pendingUser: '', storageUser: null, storageError: '', dialogOccurrence: null, dialogTargets: [], dialogGroups: [], previewGroups: [], dialogKind: '', lastFocus: null, fetchError: '', authPaused: false, personal: null, personalUser: '', personalError: '', wasReady: false, previewVersion: 0, previewTargets: [], previewValid: false, dialogScope: 'occurrence', batch: null, prs: null, prsLoading: false, generation: 0};
   const desktopNotifications = new Set();
   const sopCache = new Map();
   const sopDisclosures = new Set();
@@ -222,6 +222,35 @@
     if (!state.personal) return;
     state.personal.preferences = {view: state.view, category: state.category, color: state.color, query: state.query}; savePersonal();
   }
+  // Grouping is a cosmetic browser-wide choice, so it lives in a cookie instead of the per-user personal storage.
+  const groupingCookie = 'ops-alert-dashboard.group-by-name.v1';
+  const groupingCookieMaxAge = 31536000;
+  /** Read only a known grouping value; absent, malformed or blocked cookies mean the flat list. */
+  function readGroupedPreference() {
+    try {
+      for (const part of String(document.cookie).split(';')) {
+        const item = part.trim();
+        if (item.startsWith(groupingCookie + '=')) return decodeURIComponent(item.slice(groupingCookie.length + 1)) === 'true';
+      }
+    } catch { /* A blocked cookie store never blocks rendering. */ }
+    return false;
+  }
+  /** Persist the grouping choice for this browser; a blocked cookie never disables the toggle. */
+  function writeGroupedPreference(grouped) {
+    try {
+      const secure = window.location?.protocol === 'https:' ? '; Secure' : '';
+      document.cookie = groupingCookie + '=' + encodeURIComponent(grouped ? 'true' : 'false') + '; Max-Age=' + groupingCookieMaxAge + '; Path=/; SameSite=Lax' + secure;
+    } catch { /* The choice still applies to this page without persistence. */ }
+  }
+  /** Apply the stored grouping choice once when the dashboard loads. */
+  function loadGroupingPreference() { state.grouped = readGroupedPreference(); }
+  /** Switch between the flat and grouped alert list, persisting only the cosmetic choice. */
+  function toggleGrouping(grouped) {
+    state.grouped = grouped;
+    writeGroupedPreference(grouped);
+    render();
+  }
+  loadGroupingPreference();
   /** Keep personal reading independent of another operator changing workflow state. */
   function unread(o) { return !isReport(o) && state.personal && state.personal.known.includes(id(o)) && !state.personal.read.includes(id(o)); }
   /** Record an explicit reading action without acknowledging the shared alert. */
@@ -288,7 +317,7 @@
   function pauseAuthentication(message) {
     closeDesktopNotifications();
     state.authPaused = true; state.wasReady = false; state.generation++; state.snapshot = null; state.prs = null; state.selected = ''; state.checked.clear(); state.selectedReport = '';
-    sopCache.clear(); metricsCache.clear(); sopDisclosures.clear(); metricsDisclosures.clear(); metricsSelections.clear(); state.reportDisclosures.clear();
+    sopCache.clear(); metricsCache.clear(); sopDisclosures.clear(); metricsDisclosures.clear(); metricsSelections.clear(); state.reportDisclosures.clear(); state.groupDisclosures.clear();
     if (el('action-dialog').open) closeDialog(); state.fetchError = message;
     document.title = 'Sign in · Test Platform Operations';
     chaiChat?.update(null);
@@ -446,7 +475,9 @@
     el('filters').replaceChildren();
     el('filters').hidden = ['chai_reports', 'unmerged_prs'].includes(state.view);
     el('color-label').hidden = ['chai_reports', 'unmerged_prs'].includes(state.view);
+    el('grouping').hidden = ['chai_reports', 'unmerged_prs'].includes(state.view);
     el('search').closest('label').hidden = state.view === 'unmerged_prs';
+    el('group-by-name').checked = state.grouped;
     for (const [key, label] of Object.entries(categories)) {
       const b = button('', () => { selectionChanged(); state.category = state.category === key ? '' : key; rememberPreferences(); render(); }, 'filter');
       b.setAttribute('aria-pressed', String(state.category === key));
@@ -460,12 +491,67 @@
     if (!state.authPaused) { const count = items().filter(o => o.view === 'feed' && unread(o)).length; document.title = (count ? '(' + count + ') ' : '') + 'Test Platform · Operations'; }
     el('title').textContent = views[state.view][1]; el('subtitle').textContent = views[state.view][2];
     pruneSelection();
-    const content = el('content'); content.replaceChildren();
+    const content = el('content'); rememberGroupDisclosures(content); content.replaceChildren();
     if (!state.snapshot) { content.append(node('p', state.authPaused ? 'Sign in again to reload your operations workspace. Pending action requests stay in this browser session and are never replayed automatically.' : 'Waiting for the first snapshot…', 'empty')); return; }
     if (state.view === 'unmerged_prs') { renderPRs(content); return; }
     const list = visible();
     if (state.view === 'chai_reports') { renderReports(content, sorted(items().filter(isReport))); return; }
     renderAlerts(content, list);
+  }
+  /** Grouping key: the first parsed identifier, or the readable title when none was parsed. */
+  function alertGroupName(o) {
+    return text((o.message.identifiers || [])[0]) || displayTitle(o);
+  }
+  /** Group the filtered occurrences by name in input order; a Map keeps hostile keys like __proto__ distinct. */
+  function groupAlerts(list) {
+    const groups = new Map();
+    for (const o of list) {
+      const name = alertGroupName(o);
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push(o);
+    }
+    return groups;
+  }
+  /** One occurrence row: its optional selection checkbox plus the inspector card. */
+  function alertRow(o) {
+    const row = node('div', null, 'alert-row' + (o.classification.color ? ' ' + o.classification.color : ''));
+    if (openAlert(o)) {
+      const check = node('input'); check.id = 'select-alert-' + id(o); check.type = 'checkbox'; check.checked = state.checked.has(id(o)); check.setAttribute('aria-label', 'Select ' + displayTitle(o));
+      check.addEventListener('change', () => { if (check.checked) state.checked.add(id(o)); else state.checked.delete(id(o)); render(); el(check.id)?.focus(); }); row.append(check);
+    }
+    const b = button('', () => { selectionChanged(); state.selected = state.selected === id(o) ? '' : id(o); if (state.selected) markRead(o); render(); el(state.selected ? 'inspector-close' : 'alert-card-' + id(o))?.focus(); }, 'alert-card ' + o.classification.color + (unread(o) ? ' unread' : ''));
+    b.id = 'alert-card-' + id(o);
+    b.setAttribute('aria-pressed', String(id(o) === state.selected));
+    append(b, append(node('span', null, 'row-top'), badge(o), unread(o) ? node('span', 'NEW', 'new-indicator') : null, sourceStatus(o) ? node('span', sourceStatus(o), 'source-status') : null, node('small', categories[o.classification.category] || 'Other')), node('strong', displayTitle(o)), identifierSubtitle(displayTitle(o), o.message.identifiers), append(node('span', null, 'row-meta'), node('span', o.message.source), node('time', date(o.message.reported_at))));
+    if (workflow(o).acknowledged_by) b.append(node('span', 'WIP · ' + workflow(o).acknowledged_by, 'identifier'));
+    if (o.snooze) b.append(node('span', 'Snoozed until ' + date(o.snooze.until), 'identifier'));
+    if (o.investigation) b.append(node('span', 'Chai · ' + statusLabel(o.investigation.status), 'identifier'));
+    append(row, b);
+    return row;
+  }
+  /** Collapse same-name occurrences behind one native disclosure while keeping every row and action. Groups with personally unread members render first; the stable sort keeps each section in the list's newest-first order. */
+  function appendGroupedRows(cards, list) {
+    const groups = [...groupAlerts(list)].map(([name, members]) => ({name, members, fresh: members.filter(unread).length}));
+    groups.sort((left, right) => (right.fresh > 0) - (left.fresh > 0));
+    for (const {name, members, fresh} of groups) {
+      const group = node('details', null, 'alert-group');
+      group.dataset.name = name;
+      group.dataset.generation = state.generation;
+      group.open = state.groupDisclosures.has(name);
+      append(group, append(node('summary'), node('strong', name), node('span', members.length + ' occurrence' + (members.length === 1 ? '' : 's'), 'count'), fresh ? node('span', fresh + ' new', 'new-indicator') : null));
+      const rows = node('div', null, 'group-items');
+      for (const o of members) rows.append(alertRow(o));
+      group.append(rows);
+      cards.append(group);
+    }
+  }
+  /** Snapshot live disclosures just before a rerender replaces the groups. Reading the nodes directly avoids toggle callbacks, which can fire after replacement or an identity reset, and the generation guard keeps a stale tree from reviving cleared state. */
+  function rememberGroupDisclosures(content) {
+    for (const group of content.querySelectorAll('.alert-group')) {
+      if (Number(group.dataset.generation) !== state.generation) continue;
+      if (group.open) state.groupDisclosures.add(group.dataset.name);
+      else state.groupDisclosures.delete(group.dataset.name);
+    }
   }
   /** Keep selection and inspection independent, with details opened only by an explicit click. */
   function renderAlerts(content, list) {
@@ -473,7 +559,7 @@
     if (!list.some(o => id(o) === state.selected)) state.selected = '';
     const workspace = node('div', null, 'workspace' + (state.selected ? ' with-inspector' : ''));
     const listBox = node('section', null, 'list'); listBox.setAttribute('aria-label', 'Alert occurrences');
-    append(listBox, append(node('div', null, 'list-head'), node('span', list.length + ' occurrence' + (list.length === 1 ? '' : 's')), node('span', 'Latest report first')));
+    append(listBox, append(node('div', null, 'list-head'), node('span', list.length + ' occurrence' + (list.length === 1 ? '' : 's')), node('span', state.grouped ? 'Groups with new alerts first' : 'Latest report first')));
     const selectable = list.filter(openAlert);
     if (selectable.length) {
       const toolbar = node('div', null, 'bulk-actions');
@@ -490,21 +576,8 @@
       listBox.append(toolbar);
     }
     const cards = node('div', null, 'list-items');
-    for (const o of list) {
-      const row = node('div', null, 'alert-row' + (o.classification.color ? ' ' + o.classification.color : ''));
-      if (openAlert(o)) {
-        const check = node('input'); check.id = 'select-alert-' + id(o); check.type = 'checkbox'; check.checked = state.checked.has(id(o)); check.setAttribute('aria-label', 'Select ' + displayTitle(o));
-        check.addEventListener('change', () => { if (check.checked) state.checked.add(id(o)); else state.checked.delete(id(o)); render(); el(check.id)?.focus(); }); row.append(check);
-      }
-      const b = button('', () => { selectionChanged(); state.selected = state.selected === id(o) ? '' : id(o); if (state.selected) markRead(o); render(); el(state.selected ? 'inspector-close' : 'alert-card-' + id(o))?.focus(); }, 'alert-card ' + o.classification.color + (unread(o) ? ' unread' : ''));
-      b.id = 'alert-card-' + id(o);
-      b.setAttribute('aria-pressed', String(id(o) === state.selected));
-      append(b, append(node('span', null, 'row-top'), badge(o), unread(o) ? node('span', 'NEW', 'new-indicator') : null, sourceStatus(o) ? node('span', sourceStatus(o), 'source-status') : null, node('small', categories[o.classification.category] || 'Other')), node('strong', displayTitle(o)), identifierSubtitle(displayTitle(o), o.message.identifiers), append(node('span', null, 'row-meta'), node('span', o.message.source), node('time', date(o.message.reported_at))));
-      if (workflow(o).acknowledged_by) b.append(node('span', 'WIP · ' + workflow(o).acknowledged_by, 'identifier'));
-      if (o.snooze) b.append(node('span', 'Snoozed until ' + date(o.snooze.until), 'identifier'));
-      if (o.investigation) b.append(node('span', 'Chai · ' + statusLabel(o.investigation.status), 'identifier'));
-      append(row, b); cards.append(row);
-    }
+    if (state.grouped) appendGroupedRows(cards, list);
+    else for (const o of list) cards.append(alertRow(o));
     if (!list.length) cards.append(node('p', 'No occurrences match this view and these filters.', 'empty'));
     listBox.append(cards);
     workspace.append(listBox);
@@ -1339,7 +1412,7 @@
         closeDesktopNotifications();
         el('action-error').hidden = true; el('action-error').textContent = ''; announce('');
         state.generation++; state.selected = ''; state.checked.clear(); state.selectedReport = ''; state.pending = null; state.pendingUser = ''; state.batch = null; state.storageUser = null;
-        sopCache.clear(); metricsCache.clear(); sopDisclosures.clear(); metricsDisclosures.clear(); metricsSelections.clear(); state.reportDisclosures.clear(); state.prs = null;
+        sopCache.clear(); metricsCache.clear(); sopDisclosures.clear(); metricsDisclosures.clear(); metricsSelections.clear(); state.reportDisclosures.clear(); state.groupDisclosures.clear(); state.prs = null;
         if (el('action-dialog').open) closeDialog();
       }
       state.authPaused = false; state.snapshot = snapshot; state.fetchError = '';
@@ -1428,6 +1501,7 @@
   el('dismiss-expired').addEventListener('click', dismissExpired);
   el('search').addEventListener('input', event => { selectionChanged(); state.query = event.target.value; rememberPreferences(); render(); });
   el('color').addEventListener('change', event => { selectionChanged(); state.color = event.target.value; rememberPreferences(); render(); });
+  el('group-by-name').addEventListener('change', event => toggleGrouping(event.target.checked));
   el('draft').addEventListener('input', updatePreview);
   el('cancel').addEventListener('click', closeDialog); el('dialog-close').addEventListener('click', closeDialog);
   el('action-dialog').addEventListener('cancel', event => { event.preventDefault(); closeDialog(); });
